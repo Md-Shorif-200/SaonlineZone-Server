@@ -4,22 +4,30 @@ const app = express();
 const cookieParser = require('cookie-parser');
 const port = process.env.PORT || 5000;
 require('dotenv').config()
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb'); // ObjectId import করুন
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authenticateToken, authorizeRole } = require('./middleware/auth');
 
 
 
-
 // middlewares 
 app.use(express.json())
-app.use(cookieParser()) // নতুন যোগ
-app.use(cors({
-    origin: ['http://localhost:3000', 'http://localhost:5173'], 
-    credentials: true 
-}))
+app.use(cookieParser())
 
+// CORS configuration ঠিক করুন
+app.use(cors({
+    origin: [
+        'http://localhost:5173', 
+        'http://localhost:3000',
+        // 'https://your-frontend-domain.vercel.app', // আপনার actual frontend domain দিন
+        // development এর জন্য
+        process.env.CLIENT_URL || 'http://localhost:5173'
+    ], 
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}))
 // !mongodb uri link
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.56yvv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -35,7 +43,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     // Database collection
     const db = client.db('SaonlineZone-Db');
@@ -50,74 +58,67 @@ async function run() {
         );
     };
 
-    // Login route - JWT token generate করে cookie এ set করবে
-    app.post('/api/auth/login', async (req, res) => {
-        try {
-            const { email, password } = req.body;
+ // Login route এ cookie settings ঠিক করুন
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
 
-            // User খুঁজুন
-            const user = await usersCollection.findOne({ email });
-            if (!user) {
-                return res.status(400).json({ 
-                    success: false, 
-                    message: 'Invalid email or password' 
-                });
-            }
-
-            // Password verify করুন (যদি আপনার existing data তে password hash করা থাকে)
-            // const isValidPassword = await bcrypt.compare(password, user.password);
-            // if (!isValidPassword) {
-            //     return res.status(400).json({ 
-            //         success: false, 
-            //         message: 'Invalid email or password' 
-            //     });
-            // }
-
-            // এখনকার জন্য plain text password check (পরে hash করবেন)
-            if (user.password !== password) {
-                return res.status(400).json({ 
-                    success: false, 
-                    message: 'Invalid email or password' 
-                });
-            }
-
-            // JWT token তৈরি করুন
-            const token = generateToken(user._id, user.email, user.role);
-
-            // HTTP-only cookie তে token set করুন
-            res.cookie('authToken', token, {
-                httpOnly: true, // JavaScript দিয়ে access করা যাবে না
-                secure: process.env.NODE_ENV === 'production', // Production এ HTTPS required
-                sameSite: 'lax', // CSRF protection
-                maxAge: 7 * 24 * 60 * 60 * 1000 // 7 দিন (milliseconds এ)
-            });
-
-            // Response পাঠান (password বাদ দিয়ে)
-            const { password: userPassword, ...userWithoutPassword } = user;
-            
-            res.json({
-                success: true,
-                message: 'Login successful',
-                user: userWithoutPassword
-            });
-
-        } catch (error) {
-            console.error('Login error:', error);
-            res.status(500).json({ 
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+            return res.status(400).json({ 
                 success: false, 
-                message: 'Server error during login' 
+                message: 'Invalid email or password' 
             });
         }
-    });
 
-    // Logout route
-    app.post('/api/auth/logout', (req, res) => {
-        res.clearCookie('authToken');
-        res.json({ 
-            success: true, 
-            message: 'Logged out successfully' 
+        if (user.password !== password) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Invalid email or password' 
+            });
+        }
+
+        const token = generateToken(user._id, user.email, user.role);
+
+        // Cookie settings ঠিক করুন
+        res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production', // Production এ true
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // Cross-origin এর জন্য
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 দিন
+            path: '/' // Cookie path specify করুন
         });
+
+        const { password: userPassword, ...userWithoutPassword } = user;
+        
+        res.json({
+            success: true,
+            message: 'Login successful',
+            user: userWithoutPassword
+        });
+
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error during login' 
+        });
+    }
+});
+
+// Logout route ঠিক করুন
+app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('authToken', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        path: '/'
     });
+    res.json({ 
+        success: true, 
+        message: 'Logged out successfully' 
+    });
+});
 
     // Current user profile route (authentication required)
     app.get('/api/auth/me', authenticateToken(usersCollection), (req, res) => {
@@ -321,8 +322,8 @@ async function run() {
 
     // বাকি আপনার existing code...
 
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    // await client.db("admin").command({ ping: 1 });
+    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // await client.close();
   }
